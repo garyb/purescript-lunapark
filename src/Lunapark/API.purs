@@ -33,6 +33,15 @@ import Node.Buffer as B
 import Node.FS.Aff as FS
 import Run as R
 import Run.Except (EXCEPT)
+import Type.Row (type (+))
+
+type LUNAPARK' r = (lunapark ∷ LUNAPARK | r)
+type LUNAPARK_ACTIONS' r = (lunaparkActions ∷ LUNAPARK_ACTIONS | r)
+type AFF' r = (aff ∷ R.AFF | r)
+type EFFECT' r = (effect ∷ R.EFFECT | r)
+type EXCEPT' r = (except ∷ EXCEPT LE.Error | r)
+
+type Lunapark r = R.Run (AFF' + EFFECT' + EXCEPT' + LUNAPARK' + LUNAPARK_ACTIONS' + r)
 
 init
   ∷ ∀ m r a
@@ -40,7 +49,7 @@ init
   ⇒ MonadRec m
   ⇒ String
   → LT.CapabilitiesRequest
-  → m (Either LE.Error (Lunapark r a → BaseRun r a))
+  → m (Either LE.Error (Lunapark r a → R.Run (AFF' + EFFECT' + EXCEPT' + r) a))
 init uri caps = do
   res ←
     liftAff
@@ -85,23 +94,22 @@ interpret
   ∷ ∀ r
   . HandleLunaparkInput
   → Lunapark r
-  ~> BaseRun r
+  ~> R.Run (AFF' + EFFECT' + EXCEPT' + r)
 interpret input = runLunapark input <<< runLunaparkActions input
 
-
-type Lunapark r = BaseRun (lunapark ∷ LUNAPARK, lunaparkActions ∷ LUNAPARK_ACTIONS|r)
-
-type BaseRun r = R.Run
-  ( except ∷ EXCEPT LE.Error
-  , aff ∷ R.AFF
-  , effect ∷ R.EFFECT
-  | r)
-
-runLunapark ∷ ∀ r. HandleLunaparkInput → BaseRun (lunapark ∷ LUNAPARK|r) ~> BaseRun r
+runLunapark
+  ∷ ∀ r
+  . HandleLunaparkInput
+  → R.Run (AFF' + EFFECT' + EXCEPT' + LUNAPARK' + r)
+  ~> R.Run (AFF' + EFFECT' + EXCEPT' + r)
 runLunapark input = do
   R.interpretRec (R.on _lunapark (handleLunapark input) R.send)
 
-runLunaparkActions ∷ ∀ r. HandleLunaparkInput → Lunapark r ~> BaseRun (lunapark ∷ LUNAPARK|r)
+runLunaparkActions
+  ∷ ∀ r
+  . HandleLunaparkInput
+  → R.Run (AFF' + EXCEPT' + LUNAPARK' + LUNAPARK_ACTIONS' + r)
+  ~> R.Run (AFF' + EXCEPT' + LUNAPARK' + r)
 runLunaparkActions input
   | input.actionsEnabled = interpretW3CActions Nil
   | otherwise = R.interpretRec (R.on _lunaparkActions (jsonWireActions input) R.send)
@@ -109,8 +117,8 @@ runLunaparkActions input
 interpretW3CActions
   ∷ ∀ r
   . List LT.ActionSequence
-  → Lunapark r
-  ~> BaseRun (lunapark ∷ LUNAPARK|r)
+  → R.Run (LUNAPARK' + LUNAPARK_ACTIONS' + r)
+  ~> R.Run (LUNAPARK' + r)
 interpretW3CActions acc as = case R.peel as of
   Left la → case tag la of
     Left a → w3cActions acc interpretW3CActions a
@@ -123,14 +131,11 @@ interpretW3CActions acc as = case R.peel as of
   tag = R.on _lunaparkActions Left Right
 
 w3cActions
-  ∷ ∀ r a
+  ∷ ∀ f g a
   . List LT.ActionSequence
-  → ( List LT.ActionSequence
-    → Lunapark r
-    ~> BaseRun (lunapark ∷ LUNAPARK|r)
-    )
-  → ActionF (Lunapark r a)
-  → BaseRun (lunapark ∷ LUNAPARK|r) a
+  → (List LT.ActionSequence → f ~> g)
+  → ActionF (f a)
+  → g a
 w3cActions acc loop = case _ of
   Click btn next →
     let seq = [ LT.pointerDown btn, LT.pointerUp btn ]
@@ -215,7 +220,11 @@ type HandleLunaparkInput =
   , actionsEnabled ∷ Boolean
   }
 
-jsonWireActions ∷ ∀ r. HandleLunaparkInput → ActionF ~> BaseRun (lunapark ∷ LUNAPARK|r)
+jsonWireActions
+  ∷ ∀ r
+  . HandleLunaparkInput
+  → ActionF
+  ~> R.Run (AFF' + EXCEPT' + LUNAPARK' + r)
 jsonWireActions inp = case _ of
   Click btn next → do
     _ ← post inp (LP.Click : Nil) (LT.encodeButton btn)
@@ -280,7 +289,11 @@ jsonWireActions inp = case _ of
       _ ← post_ inp (LP.Touch : LP.DoubleClick : Nil)
       pure next
 
-handleLunapark ∷ ∀ r. HandleLunaparkInput → LunaparkF ~> BaseRun r
+handleLunapark
+  ∷ ∀ r
+  . HandleLunaparkInput
+  → LunaparkF
+  ~> R.Run (AFF' + EFFECT' + EXCEPT' + r)
 handleLunapark inp = case _ of
   Quit next → do
     _ ← delete inp Nil
@@ -294,7 +307,7 @@ handleLunapark inp = case _ of
     pure $ cont res
   SetTimeouts ts next → do
     R.liftEffect $ Ref.write ts inp.timeoutsRef
-    tryAndCache "set timeouts"
+    tryAndCache inp "set timeouts"
       [ void $ post inp (LP.Timeouts : Nil) (LT.encodeTimeouts ts)
       , do T.for_ (LT.encodeLegacyTimeouts ts) \j →
            void $ post inp (LP.Timeouts : Nil) j
@@ -319,13 +332,13 @@ handleLunapark inp = case _ of
     res ← get inp (LP.Title : Nil)
     map cont $ throwLeft $ J.decodeJson res
   GetWindowHandle cont → do
-    res ← tryAndCache "get window handle"
+    res ← tryAndCache inp "get window handle"
       [ get inp (LP.Window : Nil)
       , get inp (LP.WindowHandle : Nil)
       ]
     map cont $ throwLeft $ LT.decodeWindowHandle res
   GetWindowHandles cont → do
-    res ← tryAndCache "get window handles"
+    res ← tryAndCache inp "get window handles"
       [ get inp (LP.Window : LP.Handles : Nil)
       , get inp (LP.WindowHandles : Nil)
       ]
@@ -343,7 +356,7 @@ handleLunapark inp = case _ of
     _ ← post_ inp (LP.Frame : LP.Parent : Nil)
     pure next
   GetWindowRectangle cont → do
-    res ← tryAndCache "get window rectangle"
+    res ← tryAndCache inp "get window rectangle"
       [ do res ← get inp (LP.Window : LP.Rect : Nil)
            throwLeft $ LT.decodeRectangle res
       , do position ← get inp (LP.Window : LP.Position : Nil)
@@ -352,7 +365,7 @@ handleLunapark inp = case _ of
       ]
     pure $ cont res
   SetWindowRectangle r next → do
-    tryAndCache "set window rectangle"
+    tryAndCache inp "set window rectangle"
       [ void $ post inp (LP.Window : LP.Rect : Nil) (LT.encodeRectangle r)
       , do let js = LT.encodeRectangleLegacy r
            _ ← post inp (LP.Window : LP.Size : Nil) js.size
@@ -369,12 +382,12 @@ handleLunapark inp = case _ of
     _ ← post_ inp (LP.Window : LP.Fullscreen : Nil)
     pure next
   ExecuteScript script cont → do
-    map cont $ tryAndCache "execute script"
+    map cont $ tryAndCache inp "execute script"
       [ post inp (LP.Execute : LP.Sync : Nil) (LT.encodeScript script)
       , post inp (LP.Execute : Nil) (LT.encodeScript script)
       ]
   ExecuteScriptAsync script cont → do
-    map cont $ tryAndCache "execute script async"
+    map cont $ tryAndCache inp "execute script async"
       [ post inp (LP.Execute : LP.Async : Nil) (LT.encodeScript script)
       , post inp (LP.ExecuteAsync : Nil) (LT.encodeScript script)
       ]
@@ -394,25 +407,25 @@ handleLunapark inp = case _ of
     _ ← post inp (LP.Cookies : Nil) (LT.encodeCookie cookie)
     pure next
   DismissAlert next → do
-    _ ← tryAndCache "dismiss alert"
+    _ ← tryAndCache inp "dismiss alert"
       [ post_ inp (LP.Alert : LP.Dismiss : Nil)
       , post_ inp (LP.DismissAlert : Nil)
       ]
     pure next
   AcceptAlert next → do
-    _ ← tryAndCache "accept alert"
+    _ ← tryAndCache inp "accept alert"
       [ post_ inp (LP.Alert : LP.Accept : Nil)
       , post_ inp (LP.AcceptAlert : Nil)
       ]
     pure next
   GetAlertText cont → do
-    res ← tryAndCache "get alert text"
+    res ← tryAndCache inp "get alert text"
       [ get inp (LP.Alert : LP.Text : Nil)
       , get inp (LP.AlertText : Nil)
       ]
     map cont $ throwLeft $ J.decodeJson res
   SendAlertText str next → do
-    _ ← tryAndCache "send alert text"
+    _ ← tryAndCache inp "send alert text"
       [ post inp (LP.Alert : LP.Text : Nil) (LT.encodeSendKeysRequest str)
       , post inp (LP.AlertText : Nil) (LT.encodeSendKeysRequest str)
       ]
@@ -472,7 +485,7 @@ handleLunapark inp = case _ of
         res ← get inp (inElement : LP.Name : Nil)
         map cont $ throwLeft $ J.decodeJson res
       GetRectangle cont →
-        map cont $ tryAndCache "get element rectangle"
+        map cont $ tryAndCache inp "get element rectangle"
           [ do res ← get inp (inElement : LP.Rect : Nil)
                throwLeft $ LT.decodeRectangle res
           , do position ← get inp (inElement : LP.Position : Nil)
@@ -489,14 +502,14 @@ handleLunapark inp = case _ of
         _ ← post_ inp (inElement : LP.Clear : Nil)
         pure next
       SendKeysEl txt next → do
-        _ ← tryAndCache "send keys chromedriver hack"
+        _ ← tryAndCache inp "send keys chromedriver hack"
           [ post inp (inElement : LP.Value : Nil) (LT.encodeSendKeysRequest txt)
           , post inp (inElement : LP.Value : Nil)
               $ J.encodeJson $ FO.singleton "value" $ Str.toCharArray txt
           ]
         pure next
       IsDisplayed cont → do
-        res ← tryAndCache "is element displayed"
+        res ← tryAndCache inp "is element displayed"
           [ get inp (inElement : LP.Displayed : Nil)
           , do let script =
                      { script: """var el = arguments[0]; return el.offsetHeight > 0 && el.offsetWidth > 0"""
@@ -509,34 +522,37 @@ handleLunapark inp = case _ of
         _ ← post_ inp (inElement : LP.Submit : Nil)
         pure next
 
-  where
+tryAndCache
+  ∷ ∀ r a
+  . HandleLunaparkInput
+  → String
+  → Array (R.Run (EFFECT' + EXCEPT' + r) a)
+  → R.Run (EFFECT' + EXCEPT' + r) a
+tryAndCache inp key actions = do
+  let emptyCases = throwLeft $ Left $ "No valid cases for " <> key <> " caching"
+  let incorrectCache = throwLeft $ Left $ "Fallback for " <> key <> " error"
 
-  tryAndCache ∷ ∀ a. String → Array (BaseRun r a) → BaseRun r a
-  tryAndCache key actions = do
-    let emptyCases = throwLeft $ Left $ "No valid cases for " <> key <> " caching"
-    let incorrectCache = throwLeft $ Left $ "Fallback for " <> key <> " error"
-
-    mp ← R.liftEffect $ Ref.read inp.requestMapRef
-    case Map.lookup key mp of
-      Just ix → case A.index actions ix of
-        Just action → action
-        Nothing → incorrectCache
-      Nothing →
-        let
-          go ix acc act =
-            let try' = do
-                  a ← act
-                  R.liftEffect $ Ref.modify_ (Map.insert key ix) inp.requestMapRef
-                  pure a
-            in catch try' \_ → acc
-        in
-         FI.foldlWithIndex go emptyCases actions
+  mp ← R.liftEffect $ Ref.read inp.requestMapRef
+  case Map.lookup key mp of
+    Just ix → case A.index actions ix of
+      Just action → action
+      Nothing → incorrectCache
+    Nothing →
+      let
+        go ix acc act =
+          let try' = do
+                a ← act
+                R.liftEffect $ Ref.modify_ (Map.insert key ix) inp.requestMapRef
+                pure a
+          in catch try' \_ → acc
+      in
+       FI.foldlWithIndex go emptyCases actions
 
 get
   ∷ ∀ r
   . HandleLunaparkInput
   → List LP.EndpointPart
-  → BaseRun r J.Json
+  → R.Run (AFF' + EXCEPT' + r) J.Json
 get inp ep = liftAndRethrow $ LP.get inp.uri (LP.InSession inp.session : ep)
 
 post
@@ -544,19 +560,19 @@ post
   . HandleLunaparkInput
   → List LP.EndpointPart
   → J.Json
-  → BaseRun r J.Json
+  → R.Run (AFF' + EXCEPT' + r) J.Json
 post inp ep json = liftAndRethrow $ LP.post inp.uri (LP.InSession inp.session : ep) json
 
 post_
   ∷ ∀ r
   . HandleLunaparkInput
   → List LP.EndpointPart
-  → BaseRun r J.Json
+  → R.Run (AFF' + EXCEPT' + r) J.Json
 post_ inp ep = liftAndRethrow $ LP.post_ inp.uri (LP.InSession inp.session : ep)
 
 delete
   ∷ ∀ r
   . HandleLunaparkInput
   → List LP.EndpointPart
-  → BaseRun r J.Json
+  → R.Run (AFF' + EXCEPT' + r) J.Json
 delete inp ep = liftAndRethrow $ LP.delete inp.uri (LP.InSession inp.session : ep)
