@@ -11,6 +11,7 @@ data ErrorType
   = ElementClickIntercepted
   | ElementNotSelectable
   | ElementNotInteractable
+  | ElementNotVisible
   | InsecureCertificate
   | InvalidArgument
   | InvalidCookieDomain
@@ -42,6 +43,7 @@ fromStringCode = case _ of
   "element click intercepted" → Right ElementClickIntercepted
   "element not selectable" → Right ElementNotSelectable
   "element not interactable" → Right ElementNotInteractable
+  "element not visible" → Right ElementNotVisible
   "insecure certificate" → Right InsecureCertificate
   "invalid argument" → Right InvalidArgument
   "invalid cookie domain" → Right InvalidCookieDomain
@@ -74,6 +76,7 @@ toStringCode = case _ of
   ElementClickIntercepted → "element click intercepted"
   ElementNotSelectable → "element not selectable"
   ElementNotInteractable → "element not interactable"
+  ElementNotVisible → "element not visible"
   InsecureCertificate → "insecure certificate"
   InvalidArgument → "invalid argument"
   InvalidCookieDomain → "invalid cookie domain"
